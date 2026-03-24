@@ -6,14 +6,26 @@ import dev.langchain4j.agent.tool.Tool;
 import java.io.*;
 import java.nio.file.*;
 
+/**
+ * Agent 工具类
+ * 提供文件读写、命令执行等工具，供 LLM 调用
+ */
 public class AgentTools {
 
+    /** 工作目录，限制所有文件操作在此目录内 */
     private static final Path WORKDIR = Paths.get(".").toAbsolutePath().normalize();
 
+    /**
+     * 执行 Shell 命令
+     * 自动根据操作系统选择 cmd (Windows) 或 bash (Linux/Mac)
+     *
+     * @param command 要执行的命令
+     * @return 命令输出或错误信息
+     */
     @Tool("Run a shell command safely")
     public String run(@P("command") String command) {
-
-        String[] dangerous = { "rm -rf /", "sudo", "shutdown", "reboot", "> /dev/" };
+        // 危险命令黑名单
+        String[] dangerous = {"rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"};
         for (String d : dangerous) {
             if (command.contains(d)) {
                 return "Error: Dangerous command blocked";
@@ -21,7 +33,6 @@ public class AgentTools {
         }
 
         try {
-
             boolean isWindows = System.getProperty("os.name")
                     .toLowerCase()
                     .contains("win");
@@ -29,12 +40,13 @@ public class AgentTools {
             Process process;
 
             if (isWindows) {
-                // 👉 Windows 用 cmd
+                // Windows: 使用 cmd 执行
                 process = new ProcessBuilder("cmd", "/c", command)
                         .directory(WORKDIR.toFile())
                         .redirectErrorStream(true)
                         .start();
             } else {
+                // Linux/Mac: 使用 bash 执行
                 process = new ProcessBuilder("bash", "-c", command)
                         .directory(WORKDIR.toFile())
                         .redirectErrorStream(true)
@@ -49,10 +61,11 @@ public class AgentTools {
 
             long start = System.currentTimeMillis();
 
+            // 读取命令输出
             while ((line = reader.readLine()) != null) {
                 output.append(line).append("\n");
 
-                // ✅ 超时控制（120秒）
+                // 超时控制（120秒）
                 if (System.currentTimeMillis() - start > 120_000) {
                     process.destroy();
                     return "Error: Timeout (120s)";
@@ -69,6 +82,13 @@ public class AgentTools {
         }
     }
 
+    /**
+     * 读取文件内容
+     *
+     * @param path  文件路径
+     * @param limit 行数限制（可选，null 表示全部）
+     * @return 文件内容或错误信息
+     */
     @Tool("Read file content")
     public String read(@P("path") String path, @P("limit") Integer limit) {
         try {
@@ -77,6 +97,7 @@ public class AgentTools {
 
             String[] lines = text.split("\n");
 
+            // 如果限制了行数，截取前 limit 行
             if (limit != null && limit < lines.length) {
                 StringBuilder sb = new StringBuilder();
                 for (int i = 0; i < limit; i++) {
@@ -93,11 +114,19 @@ public class AgentTools {
         }
     }
 
+    /**
+     * 写入文件内容
+     *
+     * @param path    文件路径
+     * @param content 要写入的内容
+     * @return 成功或错误信息
+     */
     @Tool("Write content to file")
     public String write(@P("path") String path, @P("content") String content) {
         try {
             Path file = safePath(path);
 
+            // 确保父目录存在
             Files.createDirectories(file.getParent());
             Files.writeString(file, content);
 
@@ -108,6 +137,14 @@ public class AgentTools {
         }
     }
 
+    /**
+     * 编辑文件（替换文本）
+     *
+     * @param path     文件路径
+     * @param oldText  要替换的旧文本
+     * @param newText  替换后的新文本
+     * @return 成功或错误信息
+     */
     @Tool("Edit file by replacing text")
     public String edit(@P("path") String path, @P("old_text") String oldText, @P("new_text") String newText) {
         try {
@@ -119,6 +156,7 @@ public class AgentTools {
                 return "Error: Text not found in " + path;
             }
 
+            // 使用正则表达式精确替换（避免特殊字符问题）
             String updated = content.replaceFirst(
                     java.util.regex.Pattern.quote(oldText),
                     newText);
@@ -132,9 +170,17 @@ public class AgentTools {
         }
     }
 
+    /**
+     * 安全路径检查
+     * 确保文件操作不会超出 WORKDIR，防止路径遍历攻击
+     *
+     * @param input 用户输入的路径
+     * @return 解析后的安全路径
+     */
     private Path safePath(String input) {
         Path resolved = WORKDIR.resolve(input).normalize();
 
+        // 检查是否在 WORKDIR 内
         if (!resolved.startsWith(WORKDIR)) {
             throw new RuntimeException("Access denied");
         }
