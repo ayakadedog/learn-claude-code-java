@@ -14,38 +14,38 @@ import java.util.Scanner;
 public class Main {
 
     public static void main(String[] args) throws Exception {
-        // 创建 Agent 实例
         AgentLoop agent = new AgentLoop();
-
-        // 对话历史（用于记录用户输入）
         List<ChatMessage> history = new ArrayList<>();
-
-        // 创建Scanner用于读取用户输入
         Scanner scanner = new Scanner(System.in);
 
-        // 主循环：持续接收用户输入直到 exit
         while (true) {
-            // 打印提示符（青色 s01 >>）
-            System.out.print("\u001B[36ms01 >> \u001B[0m");
+            System.out.print("\033[36ms03 >> \033[0m");
 
-            String query = scanner.nextLine();
-
-            // 空输入或 exit 退出程序
-            if (query.trim().isEmpty() || query.equals("exit")) {
+            String query;
+            try {
+                query = scanner.nextLine();
+            } catch (Exception e) {
                 break;
             }
 
-            // 记录用户消息
+            if (query.trim().toLowerCase().isEmpty()
+                    || query.trim().toLowerCase().equals("q")
+                    || query.trim().toLowerCase().equals("exit")) {
+                break;
+            }
+
             history.add(UserMessage.from(query));
 
-            // 调用 Agent 处理
-            agent.run(query);
+            agent.run(history);
 
-            // 获取最后一条 AI 消息并打印
-            ChatMessage last = history.get(history.size() - 1);
-            if (last instanceof AiMessage ai) {
-                System.out.println(ai.text());
+            if (!history.isEmpty()) {
+                ChatMessage last = history.get(history.size() - 1);
+                if (last instanceof AiMessage ai && ai.text() != null) {
+                    System.out.println(ai.text());
+                }
             }
+
+            System.out.println();
         }
     }
 }

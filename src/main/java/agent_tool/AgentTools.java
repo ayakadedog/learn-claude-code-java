@@ -1,19 +1,28 @@
 package agent_tool;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 
 import java.io.*;
 import java.nio.file.*;
+import java.util.List;
 
 /**
  * Agent 工具类
- * 提供文件读写、命令执行等工具，供 LLM 调用
+ * 提供文件读写、命令执行、任务管理等工具，供 LLM 调用
  */
 public class AgentTools {
 
     /** 工作目录，限制所有文件操作在此目录内 */
     private static final Path WORKDIR = Paths.get(".").toAbsolutePath().normalize();
+
+    /** TodoManager 实例，全局共享任务清单 */
+    private static final TodoManager todoManager = new TodoManager();
+
+    /** JSON 解析器 */
+    private static final ObjectMapper mapper = new ObjectMapper();
 
     /**
      * 执行 Shell 命令
@@ -25,7 +34,7 @@ public class AgentTools {
     @Tool("Run a shell command safely")
     public String run(@P("command") String command) {
         // 危险命令黑名单
-        String[] dangerous = {"rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"};
+        String[] dangerous = { "rm -rf /", "sudo", "shutdown", "reboot", "> /dev/" };
         for (String d : dangerous) {
             if (command.contains(d)) {
                 return "Error: Dangerous command blocked";
@@ -140,9 +149,9 @@ public class AgentTools {
     /**
      * 编辑文件（替换文本）
      *
-     * @param path     文件路径
-     * @param oldText  要替换的旧文本
-     * @param newText  替换后的新文本
+     * @param path    文件路径
+     * @param oldText 要替换的旧文本
+     * @param newText 替换后的新文本
      * @return 成功或错误信息
      */
     @Tool("Edit file by replacing text")
@@ -165,6 +174,25 @@ public class AgentTools {
 
             return "Edited " + path;
 
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+
+    /**
+     * 更新任务清单
+     * 用于 AI 规划和管理多步骤任务
+     *
+     * @param items JSON 格式的任务列表，如：
+     *              [{"id":"1","text":"完成任务","status":"pending"},...]
+     *              status 可选值：pending / in_progress / completed
+     * @return 渲染后的任务清单
+     */
+    @Tool("Update task list. Track progress on multi-step tasks.")
+    public String todo(@P("items") String items) {
+        try {
+            List<TodoItem> todoItems = mapper.readValue(items, new TypeReference<List<TodoItem>>() {});
+            return todoManager.update(todoItems);
         } catch (Exception e) {
             return "Error: " + e.getMessage();
         }
