@@ -1,6 +1,8 @@
 package agent_loop;
 
 import agent_tool.AgentTools;
+import background_manager.BackgroundManager;
+import background_manager.BgNotification;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -51,6 +53,23 @@ public class AgentLoop {
     /** Nag Reminder 阈值：连续 3 轮不使用 todo 就提醒 */
     private static final int NAG_THRESHOLD = 3;
 
+    /** 执行提醒：连续只做规划而不执行的轮次计数 */
+    private static int roundsSinceExecution = 0;
+
+    /** 执行提醒阈值：连续 2 轮只规划不执行就提醒 */
+    private static final int EXECUTION_NAG_THRESHOLD = 2;
+
+    /** 规划类工具（只创建/查看任务，不产生实际工作） */
+    private static final Set<String> PLANNING_TOOLS = Set.of(
+            "task_create", "taskCreate", "task_list", "taskList", "task_get", "taskGet",
+            "todo", "task_update", "taskUpdate"
+    );
+
+    /** 执行类工具（产生实际工作输出） */
+    private static final Set<String> EXECUTION_TOOLS = Set.of(
+            "run", "bash", "read", "read_file", "write", "write_file", "edit", "edit_file"
+    );
+
     /** 子代理最大执行轮数（安全限制） */
     private static final int SUBAGENT_MAX_ROUNDS = 30;
 
@@ -67,6 +86,9 @@ public class AgentLoop {
         while (true) {
             // Layer 1: 微压缩 - 每次调用前清理旧工具结果
             MemoryCompactor.microCompact(history);
+
+            // 排空后台任务通知队列
+            drainBackgroundNotifications(history);
 
             // Layer 2: 自动压缩 - token 超限时触发
             if (MemoryCompactor.shouldAutoCompact(history)) {
@@ -101,10 +123,20 @@ public class AgentLoop {
             List<ToolExecutionResultMessage> results = new ArrayList<>();
             boolean usedTodo = false;
             boolean manualCompact = false;
+            boolean usedExecutionTool = false;
+            boolean onlyPlanningTools = true;
 
             for (ToolExecutionRequest call : calls) {
                 String toolName = call.name();
                 String argsJson = call.arguments();
+
+                // 追踪工具类型
+                if (EXECUTION_TOOLS.contains(toolName)) {
+                    usedExecutionTool = true;
+                    onlyPlanningTools = false;
+                } else if (!PLANNING_TOOLS.contains(toolName)) {
+                    onlyPlanningTools = false;
+                }
 
                 String output;
                 try {
@@ -143,6 +175,13 @@ public class AgentLoop {
                 roundsSinceTodo++;
             }
 
+            // 执行提醒：连续只规划不执行时催促
+            if (usedExecutionTool) {
+                roundsSinceExecution = 0;
+            } else if (onlyPlanningTools) {
+                roundsSinceExecution++;
+            }
+
             // 将所有工具执行结果加入消息历史
             history.addAll(results);
 
@@ -158,6 +197,18 @@ public class AgentLoop {
                 System.out.println("\n<reminder>Update your todos.</reminder>\n");
                 history.add(UserMessage.from("<reminder>Update your todos.</reminder>"));
                 roundsSinceTodo = 0;
+            }
+
+            // 如果连续只做规划不执行，插入执行提醒
+            if (roundsSinceExecution >= EXECUTION_NAG_THRESHOLD) {
+                System.out.println("\n<reminder>STOP PLANNING. START EXECUTING. "
+                        + "Use task_update to mark a task in_progress, "
+                        + "then use run/read/write/edit to do the actual work.</reminder>\n");
+                history.add(UserMessage.from(
+                        "<reminder>STOP PLANNING. START EXECUTING. "
+                        + "Use task_update to mark a task in_progress, "
+                        + "then use run/read/write/edit to do the actual work.</reminder>"));
+                roundsSinceExecution = 0;
             }
         }
     }
@@ -195,8 +246,8 @@ public class AgentLoop {
                         get(node, "old_text"),
                         get(node, "new_text"));
 
-            case "todo":
-                return tool.todo(get(node, "items"));
+//            case "todo":
+//                return tool.todo(get(node, "items"));
 
             case "subagent":
             case "task":
@@ -205,6 +256,44 @@ public class AgentLoop {
             case "loadSkill":
             case "load_skill":
                 return tool.loadSkill(get(node, "name"));
+
+            case "taskCreate":
+            case "task_create":
+                return tool.taskCreate(
+                        get(node, "subject"),
+                        node.has("description") && !node.get("description").isNull()
+                                ? node.get("description").asText() : "");
+
+            case "taskUpdate":
+            case "task_update":
+                return tool.taskUpdate(
+                        node.get("task_id").asInt(),
+                        node.has("status") && !node.get("status").isNull()
+                                ? node.get("status").asText() : null,
+                        node.has("add_blocked_by") && !node.get("add_blocked_by").isNull()
+                                ? node.get("add_blocked_by").asInt() : null,
+                        node.has("add_blocks") && !node.get("add_blocks").isNull()
+                                ? node.get("add_blocks").asInt() : null);
+
+            case "taskList":
+            case "task_list":
+                return tool.taskList();
+
+            case "taskGet":
+            case "task_get":
+                return tool.taskGet(node.get("task_id").asInt());
+
+            case "bgRun":
+            case "bg_run":
+                return tool.bgRun(get(node, "command"));
+
+            case "bgStatus":
+            case "bg_status":
+                return tool.bgStatus(get(node, "task_id"));
+
+            case "bgList":
+            case "bg_list":
+                return tool.bgList();
 
             default:
                 return "Unknown tool: " + toolName;
@@ -290,6 +379,33 @@ public class AgentLoop {
 
         throw new RuntimeException("Missing param: " + key +
                 " in " + node.toString());
+    }
+
+    /**
+     * 排空后台任务通知队列
+     * 将已完成的后台任务结果注入消息历史，让 LLM 感知
+     * 注入 user + assistant 消息对，保持对话格式完整
+     *
+     * @param history 消息历史列表
+     */
+    private static void drainBackgroundNotifications(List<ChatMessage> history) {
+        BackgroundManager bgManager = AgentTools.getBackgroundManager();
+        List<BgNotification> notifications = bgManager.drainNotifications();
+
+        if (notifications.isEmpty()) {
+            return;
+        }
+
+        StringBuilder notifText = new StringBuilder();
+        for (BgNotification n : notifications) {
+            notifText.append("[bg:").append(n.getTaskId()).append("] ").append(n.getResult()).append("\n");
+        }
+
+        String notifContent = "<background-results>\n" + notifText.toString().trim() + "\n</background-results>";
+        history.add(UserMessage.from(notifContent));
+        history.add(AiMessage.from("Noted background results."));
+
+        System.out.println("[bg] Delivered " + notifications.size() + " background notification(s)");
     }
 
     /**

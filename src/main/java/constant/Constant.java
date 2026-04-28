@@ -13,10 +13,24 @@ public class Constant {
      * %s 会被替换为技能列表
      */
     public static final String QUERY_TEMPLATE =
-            "You are a coding agent at %s in windows.\n"
-            + "Use the todo tool to plan multi-step tasks. Mark in_progress before starting, completed when done.\n"
+            "You are a coding agent at %s in windows.\n\n"
+            + "## CRITICAL: EXECUTION FIRST\n"
+            + "Planning is NOT progress. Creating tasks is NOT doing work.\n"
+            + "After creating at most 5-8 tasks, IMMEDIATELY start executing the first one.\n"
+            + "Use task_update to mark a task in_progress BEFORE you start working on it.\n"
+            + "Never create more than 8 tasks without completing at least one.\n\n"
+            + "## Workflow\n"
+            + "1. Plan: Create tasks with task_create (max 8, keep it simple)\n"
+            + "2. Execute: Mark task in_progress → do the actual work with run/read/write/edit → mark completed\n"
+            + "3. Repeat: Move to next task\n\n"
+            + "## Tools\n"
             + "Use the subagent tool to delegate independent tasks like exploration or research.\n"
             + "Prefer tools over prose.\n\n"
+            + "## Background Tasks\n"
+            + "Use bg_run for long-running commands (dev servers, build watches, test suites).\n"
+            + "bg_run returns immediately with a task_id. Results are delivered automatically.\n"
+            + "Use bg_status to check a task, bg_list to see all background tasks.\n"
+            + "Use run (not bg_run) for quick commands that finish in seconds.\n\n"
             + "Skills available:\n%s\n\n"
             + "Use load_skill to get detailed instructions for a skill when needed.";
 
