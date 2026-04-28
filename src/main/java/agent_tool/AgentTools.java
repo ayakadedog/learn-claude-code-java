@@ -1,5 +1,6 @@
 package agent_tool;
 
+import agent_skill.SkillLoader;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.P;
@@ -20,6 +21,9 @@ public class AgentTools {
 
     /** TodoManager 实例，全局共享任务清单 */
     private static final TodoManager todoManager = new TodoManager();
+
+    /** SkillLoader 实例，全局共享技能加载器 */
+    private static final SkillLoader skillLoader = new SkillLoader(WORKDIR.resolve("skills"));
 
     /** JSON 解析器 */
     private static final ObjectMapper mapper = new ObjectMapper();
@@ -196,6 +200,58 @@ public class AgentTools {
         } catch (Exception e) {
             return "Error: " + e.getMessage();
         }
+    }
+
+    /**
+     * 创建子代理来执行独立任务
+     * 实际执行逻辑在 AgentLoop.runSubagent() 中
+     * 这里只是一个占位，让 LangChain4j 能识别这个工具
+     *
+     * @param task 要委派给子代理的任务描述
+     * @return 子代理的执行总结
+     */
+    @Tool("Spawn a subagent with fresh context to handle an independent task. " +
+          "It shares the filesystem but not conversation history. " +
+          "Use this to delegate exploration, research, or parallel subtasks.")
+    public String subagent(@P("task") String task) {
+        // 实际执行在 AgentLoop.dispatch() 中路由到 AgentLoop.runSubagent()
+        // 这里返回一个标记，dispatch 会拦截并调用真正的子代理逻辑
+        return "[DELEGATED]";
+    }
+
+    /**
+     * 加载技能的完整内容
+     * 技能列表已在系统提示中显示，此工具用于按需加载详细指令
+     *
+     * @param name 技能名称
+     * @return 技能的完整内容，或错误信息
+     */
+    @Tool("Load a skill's full instructions by name. " +
+          "Use this when you need detailed guidance for a specific skill.")
+    public String loadSkill(@P("name") String name) {
+        return skillLoader.getContent(name);
+    }
+
+    /**
+     * 手动触发对话压缩
+     * 当 LLM 判断上下文过长或完成大任务后可主动调用此工具
+     * 实际执行逻辑在 AgentLoop.dispatch() 中路由到 MemoryCompactor.autoCompact()
+     *
+     * @param focus 压缩时需要保留的关注点（可选，如 "focus on UserService changes"）
+     * @return 压缩结果
+     */
+    @Tool("Trigger manual conversation compression to reduce context length. " +
+          "Use this when the conversation is getting long or after completing a major task. " +
+          "Optionally specify what information should be preserved in the summary.")
+    public String compact(@P("focus") String focus) {
+        return "[COMPACT_REQUESTED" + (focus != null && !focus.isEmpty() ? ":" + focus : "") + "]";
+    }
+
+    /**
+     * 获取 SkillLoader 实例（供 Constant 使用）
+     */
+    public static SkillLoader getSkillLoader() {
+        return skillLoader;
     }
 
     /**

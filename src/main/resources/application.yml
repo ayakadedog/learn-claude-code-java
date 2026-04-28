@@ -1,0 +1,9 @@
+model:
+  deepseek:
+    name: deepseek-chat
+    base-url: https://api.deepseek.com
+    api-key: sk-1f78469ab8df4416a7bcfd6de7fdba6a
+  minimax:
+    name: MiniMax-M2.7
+    base-url: https://api.minimax.chat
+    api-key: sk-cp-at2xGF9Tn5t3et6iIcM6-sbQpxTIPJ_8nAhh1hX2AMGwRnVQYgyM64z9ONw3oRIf5iM5yoJHuaj9ORu3i3ITJpsMsgqO156L1JMYNbngs1XDy3AvMukxGX0

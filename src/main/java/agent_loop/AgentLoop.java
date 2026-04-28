@@ -11,8 +11,10 @@ import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import memery.MemoryCompactor;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static constant.Constant.*;
 
@@ -22,15 +24,19 @@ import static constant.Constant.*;
  */
 public class AgentLoop {
 
-    /** 从 AgentTools 类的 @Tool 注解自动生成工具规范 */
-    private static final List<ToolSpecification> toolSpecifications = ToolSpecifications
-            .toolSpecificationsFrom(AgentTools.class);
+    /** 从 AgentTools 类的 @Tool 注解自动生成工具规范（父代理完整工具集） */
+    private static final List<ToolSpecification> PARENT_TOOL_SPECS = ToolSpecifications.toolSpecificationsFrom(AgentTools.class);
 
-    /** ChatModel 实例（当前使用 MiniMax） */
+    /** 子代理工具规范：过滤掉 subagent 工具，防止递归 */
+    private static final List<ToolSpecification> CHILD_TOOL_SPECS = PARENT_TOOL_SPECS.stream()
+            .filter(spec -> !spec.name().equals("subagent"))
+            .collect(Collectors.toList());
+
+    /** ChatModel 实例（当前使用 DeepSeek） */
     private static final ChatModel chatModel = OpenAiChatModel.builder()
-            .apiKey(MINIMAXKEY)
-            .modelName(MINIMAXMODEL)
-            .baseUrl(MINIMAXBASEURL)
+            .apiKey(DEEPSEEKKEY)
+            .modelName(DEEPSEEKMODEL)
+            .baseUrl(BASEURL)
             .build();
 
     /** 工具实例 */
@@ -45,21 +51,34 @@ public class AgentLoop {
     /** Nag Reminder 阈值：连续 3 轮不使用 todo 就提醒 */
     private static final int NAG_THRESHOLD = 3;
 
+    /** 子代理最大执行轮数（安全限制） */
+    private static final int SUBAGENT_MAX_ROUNDS = 30;
+
     /**
      * 执行用户消息的入口方法
      *
      * @param history 消息历史列表，会被直接修改
      */
     public static void run(List<ChatMessage> history) {
-        // 添加系统提示词
-        history.add(UserMessage.from(QUERY));
+        // 添加系统提示词（动态获取技能列表） todo 这个貌似要放在最外面 这个是初始化语句
+        history.add(UserMessage.from(getQuery()));
 
         // Agent Loop 主循环
         while (true) {
+            // Layer 1: 微压缩 - 每次调用前清理旧工具结果
+            MemoryCompactor.microCompact(history);
+
+            // Layer 2: 自动压缩 - token 超限时触发
+            if (MemoryCompactor.shouldAutoCompact(history)) {
+                System.out.println("[auto_compact triggered]");
+                MemoryCompactor.autoCompact(history, null);
+                continue;
+            }
+
             // 构建请求，附带工具规范
             ChatRequest request = ChatRequest.builder()
                     .messages(history)
-                    .toolSpecifications(toolSpecifications)
+                    .toolSpecifications(PARENT_TOOL_SPECS)
                     .build();
 
             // 发送请求给 LLM
@@ -81,6 +100,7 @@ public class AgentLoop {
             // 处理工具调用
             List<ToolExecutionResultMessage> results = new ArrayList<>();
             boolean usedTodo = false;
+            boolean manualCompact = false;
 
             for (ToolExecutionRequest call : calls) {
                 String toolName = call.name();
@@ -89,8 +109,16 @@ public class AgentLoop {
                 String output;
                 try {
                     JsonNode node = mapper.readTree(argsJson);
-                    // 分发到对应的工具方法
-                    output = dispatch(toolName, node);
+
+                    // Layer 3: 手动压缩检测
+                    if ("compact".equals(toolName)) {
+                        manualCompact = true;
+                        String focus = node.has("focus") && !node.get("focus").isNull()
+                                ? node.get("focus").asText() : null;
+                        output = "Compressing... (focus: " + (focus != null ? focus : "none") + ")";
+                    } else {
+                        output = dispatch(toolName, node);
+                    }
                 } catch (Exception e) {
                     output = "Error: " + e.getMessage();
                 }
@@ -117,6 +145,13 @@ public class AgentLoop {
 
             // 将所有工具执行结果加入消息历史
             history.addAll(results);
+
+            // Layer 3: 手动压缩执行
+            if (manualCompact) {
+                System.out.println("[manual compact]");
+                MemoryCompactor.autoCompact(history, null);
+                continue;
+            }
 
             // 如果连续 3 轮没用 todo，插入提醒
             if (roundsSinceTodo >= NAG_THRESHOLD) {
@@ -163,8 +198,75 @@ public class AgentLoop {
             case "todo":
                 return tool.todo(get(node, "items"));
 
+            case "subagent":
+            case "task":
+                return runSubagent(get(node, "task"));
+
+            case "loadSkill":
+            case "load_skill":
+                return tool.loadSkill(get(node, "name"));
+
             default:
                 return "Unknown tool: " + toolName;
+        }
+    }
+
+    /**
+     * 运行子代理
+     * 创建独立的上下文，使用精简工具集（无 subagent），只返回最终总结
+     *
+     * @param task 子代理要执行的任务描述
+     * @return 子代理的执行总结
+     */
+    public static String runSubagent(String task) {
+        System.out.println("> subagent: " + task.substring(0, Math.min(80, task.length())));
+
+        // 子代理有独立的上下文，不继承父代理的对话历史
+        List<ChatMessage> subMessages = new ArrayList<>();
+        subMessages.add(UserMessage.from(task));
+
+        try {
+            for (int round = 0; round < SUBAGENT_MAX_ROUNDS; round++) {
+                // 使用子代理工具集（没有 subagent 工具）
+                ChatRequest request = ChatRequest.builder()
+                        .messages(subMessages)
+                        .toolSpecifications(CHILD_TOOL_SPECS)
+                        .build();
+
+                ChatResponse chatResponse = chatModel.chat(request);
+                AiMessage aiMessage = chatResponse.aiMessage();
+                subMessages.add(aiMessage);
+
+                List<ToolExecutionRequest> calls = aiMessage.toolExecutionRequests();
+
+                // 如果没有工具调用，子代理已完成，返回总结
+                if (calls == null || calls.isEmpty()) {
+                    String summary = aiMessage.text() != null ? aiMessage.text() : "(no summary)";
+                    System.out.println("  subagent done: " + summary.substring(0, Math.min(200, summary.length())));
+                    return summary;
+                }
+
+                // 执行子代理的工具调用
+                List<ToolExecutionResultMessage> results = new ArrayList<>();
+                for (ToolExecutionRequest call : calls) {
+                    String output;
+                    try {
+                        JsonNode node = mapper.readTree(call.arguments());
+                        output = dispatch(call.name(), node);
+                    } catch (Exception e) {
+                        output = "Error: " + e.getMessage();
+                    }
+                    System.out.println("  [sub] " + call.name() + ": " +
+                            output.substring(0, Math.min(150, output.length())));
+                    results.add(ToolExecutionResultMessage.from(call, output));
+                }
+                subMessages.addAll(results);
+            }
+
+            return "Error: Subagent exceeded max rounds (" + SUBAGENT_MAX_ROUNDS + ")";
+
+        } catch (Exception e) {
+            return "Error: Subagent failed: " + e.getMessage();
         }
     }
 
@@ -188,5 +290,31 @@ public class AgentLoop {
 
         throw new RuntimeException("Missing param: " + key +
                 " in " + node.toString());
+    }
+
+    /**
+     * 调用 LLM 生成对话摘要（供 MemoryCompactor 使用）
+     * 使用精简请求，不带工具规范，只获取文本总结
+     *
+     * @param prompt 摘要生成提示词
+     * @return LLM 生成的摘要文本
+     */
+    public static String callForSummary(String prompt) {
+        try {
+            List<ChatMessage> summaryMessages = new ArrayList<>();
+            summaryMessages.add(UserMessage.from(prompt));
+
+            ChatRequest request = ChatRequest.builder()
+                    .messages(summaryMessages)
+                    .build();
+
+            ChatResponse chatResponse = chatModel.chat(request);
+            AiMessage aiMessage = chatResponse.aiMessage();
+
+            return aiMessage.text() != null ? aiMessage.text() : "(no summary)";
+
+        } catch (Exception e) {
+            return "Error generating summary: " + e.getMessage();
+        }
     }
 }
