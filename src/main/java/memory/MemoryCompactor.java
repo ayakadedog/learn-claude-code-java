@@ -1,4 +1,4 @@
-package memery;
+package memory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;

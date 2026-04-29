@@ -13,7 +13,7 @@ import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.openai.OpenAiChatModel;
-import memery.MemoryCompactor;
+import memory.MemoryCompactor;
 
 import java.util.*;
 import java.util.stream.Collectors;
