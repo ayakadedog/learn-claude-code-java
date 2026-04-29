@@ -27,7 +27,8 @@ import static constant.Constant.*;
 public class AgentLoop {
 
     /** 从 AgentTools 类的 @Tool 注解自动生成工具规范（父代理完整工具集） */
-    private static final List<ToolSpecification> PARENT_TOOL_SPECS = ToolSpecifications.toolSpecificationsFrom(AgentTools.class);
+    private static final List<ToolSpecification> PARENT_TOOL_SPECS = ToolSpecifications
+            .toolSpecificationsFrom(AgentTools.class);
 
     /** 子代理工具规范：过滤掉 subagent 工具，防止递归 */
     private static final List<ToolSpecification> CHILD_TOOL_SPECS = PARENT_TOOL_SPECS.stream()
@@ -62,13 +63,11 @@ public class AgentLoop {
     /** 规划类工具（只创建/查看任务，不产生实际工作） */
     private static final Set<String> PLANNING_TOOLS = Set.of(
             "task_create", "taskCreate", "task_list", "taskList", "task_get", "taskGet",
-            "todo", "task_update", "taskUpdate"
-    );
+            "todo", "task_update", "taskUpdate");
 
     /** 执行类工具（产生实际工作输出） */
     private static final Set<String> EXECUTION_TOOLS = Set.of(
-            "run", "bash", "read", "read_file", "write", "write_file", "edit", "edit_file"
-    );
+            "run", "bash", "read", "read_file", "write", "write_file", "edit", "edit_file");
 
     /** 子代理最大执行轮数（安全限制） */
     private static final int SUBAGENT_MAX_ROUNDS = 30;
@@ -146,7 +145,8 @@ public class AgentLoop {
                     if ("compact".equals(toolName)) {
                         manualCompact = true;
                         String focus = node.has("focus") && !node.get("focus").isNull()
-                                ? node.get("focus").asText() : null;
+                                ? node.get("focus").asText()
+                                : null;
                         output = "Compressing... (focus: " + (focus != null ? focus : "none") + ")";
                     } else {
                         output = dispatch(toolName, node);
@@ -206,8 +206,8 @@ public class AgentLoop {
                         + "then use run/read/write/edit to do the actual work.</reminder>\n");
                 history.add(UserMessage.from(
                         "<reminder>STOP PLANNING. START EXECUTING. "
-                        + "Use task_update to mark a task in_progress, "
-                        + "then use run/read/write/edit to do the actual work.</reminder>"));
+                                + "Use task_update to mark a task in_progress, "
+                                + "then use run/read/write/edit to do the actual work.</reminder>"));
                 roundsSinceExecution = 0;
             }
         }
@@ -246,8 +246,8 @@ public class AgentLoop {
                         get(node, "old_text"),
                         get(node, "new_text"));
 
-//            case "todo":
-//                return tool.todo(get(node, "items"));
+            // case "todo":
+            // return tool.todo(get(node, "items"));
 
             case "subagent":
             case "task":
@@ -262,18 +262,22 @@ public class AgentLoop {
                 return tool.taskCreate(
                         get(node, "subject"),
                         node.has("description") && !node.get("description").isNull()
-                                ? node.get("description").asText() : "");
+                                ? node.get("description").asText()
+                                : "");
 
             case "taskUpdate":
             case "task_update":
                 return tool.taskUpdate(
                         node.get("task_id").asInt(),
                         node.has("status") && !node.get("status").isNull()
-                                ? node.get("status").asText() : null,
+                                ? node.get("status").asText()
+                                : null,
                         node.has("add_blocked_by") && !node.get("add_blocked_by").isNull()
-                                ? node.get("add_blocked_by").asInt() : null,
+                                ? node.get("add_blocked_by").asInt()
+                                : null,
                         node.has("add_blocks") && !node.get("add_blocks").isNull()
-                                ? node.get("add_blocks").asInt() : null);
+                                ? node.get("add_blocks").asInt()
+                                : null);
 
             case "taskList":
             case "task_list":
@@ -390,21 +394,26 @@ public class AgentLoop {
      */
     private static void drainBackgroundNotifications(List<ChatMessage> history) {
         BackgroundManager bgManager = AgentTools.getBackgroundManager();
+        // ① 排空通知队列
         List<BgNotification> notifications = bgManager.drainNotifications();
 
         if (notifications.isEmpty()) {
-            return;
+            return; // 没通知就跳过
         }
 
+        // ② 拼接通知内容
         StringBuilder notifText = new StringBuilder();
         for (BgNotification n : notifications) {
-            notifText.append("[bg:").append(n.getTaskId()).append("] ").append(n.getResult()).append("\n");
+            notifText.append("[bg:").append(n.getTaskId()).append("] ")
+                    .append(n.getResult()).append("\n");
         }
 
+        // ③ 注入消息历史 ← 这是关键！
         String notifContent = "<background-results>\n" + notifText.toString().trim() + "\n</background-results>";
-        history.add(UserMessage.from(notifContent));
-        history.add(AiMessage.from("Noted background results."));
+        history.add(UserMessage.from(notifContent)); // 添加用户消息
+        history.add(AiMessage.from("Noted background results.")); // 添加 AI 确认
 
+        // ④ 打印日志
         System.out.println("[bg] Delivered " + notifications.size() + " background notification(s)");
     }
 
